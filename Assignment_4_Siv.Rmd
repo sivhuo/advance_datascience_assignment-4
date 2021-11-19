@@ -1,0 +1,150 @@
+---
+title: 'Assignment #4'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+    code_download: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+```{r libraries}
+library(tidyverse)         # for graphing and data cleaning
+library(tidymodels)        # for modeling
+library(mdsr)              # for accessing some databases - goes with Modern Data Science with R textbook
+library(RMySQL)            # for accessing MySQL databases
+library(RSQLite)           # for accessing SQLite databases
+library(gt)
+```
+
+```{r}
+theme_set(theme_minimal()) # Lisa's favorite theme
+```
+
+## SQL 
+
+You will use the airlines data from the SQL database that I used in the example in the tutorial. Be sure to include the chunk to connect to the database here. And, when you are finished, disconnect. You may need to reconnect throughout as it times out after a while.
+
+### Task 1: 
+
+```{r}
+connection_airline <- dbConnect_scidb("airlines")
+```
+
+```{r}
+airline_dataset <- tbl(connection_airline, "flights") %>% 
+  filter(year == 2017) %>% 
+  group_by(origin, year, month) %>% 
+  summarize(total_depart = n(),
+            distinct_dest = count(distinct(dest)),
+            ave_delay = mean(arr_delay),
+            ave_length = mean(arr_time - dep_time),
+            ave_distance = mean(distance),
+            prop_late = mean(arr_delay > 20)) %>% 
+  ungroup() %>% 
+  inner_join(tbl(connection_airline, "airports"),
+             by = c("origin" = "faa")) %>% 
+  select(name, year, month, distinct_dest, total_depart, ave_delay, ave_length, ave_distance, prop_late)
+```
+
+```{r}
+show_query(airline_dataset)
+```
+
+```{sql, connection= connection_airline}
+SELECT `name`, `year`, `month`, `total_depart`, `distinct_dest`, `ave_delay`, `ave_length`, `ave_distance`, `prop_late`
+FROM (SELECT `origin`, `year`, `month`, `total_depart`, `distinct_dest`, `ave_delay`, `ave_length`, `ave_distance`, `prop_late`, `name`, `lat`, `lon`, `alt`, `tz`, `dst`, `city`, `country`
+FROM (SELECT `origin`, `year`, `month`, COUNT(*) AS `total_depart`, count(distinct(`dest`)) AS `distinct_dest`, AVG(`arr_delay`) AS `ave_delay`, AVG(`arr_time` - `dep_time`) AS `ave_length`, AVG(`distance`) AS `ave_distance`, AVG(`arr_delay` > 20.0) AS `prop_late`
+FROM `flights`
+WHERE (`year` = 2017.0)
+GROUP BY `origin`, `year`, `month`) `LHS`
+INNER JOIN `airports` AS `RHS`
+ON (`LHS`.`origin` = `RHS`.`faa`)
+) `q01`
+```
+
+```{r}
+airline_dataset %>% 
+  #group by name of airlines 
+  group_by(name) %>%
+  #reduces multiple values down to a single value
+  summarise(ave_prop = mean(prop_late),
+            ave_delay = round(mean(ave_delay), digits = 2)) %>%
+  arrange(desc(ave_prop)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = ave_prop, y = fct_reorder(name, ave_prop))) +
+  geom_col(aes(fill = ave_delay)) +
+  geom_label(aes(label = ave_delay)) +
+  labs(x = "Proportion of flights arriving more than 20 minutes late", y = "", fill = "Average delay of flights")
+```
+
+```{r}
+airline_dataset %>% 
+  group_by(name) %>% 
+  summarise(ave_prop = mean(prop_late),
+            ave_delay = mean(ave_delay)) %>%
+  arrange(desc(ave_prop)) %>% 
+  head(5) %>% 
+  gt() %>% 
+  tab_header(
+    title = md("**The 5 worst airports based on late arrivals**")) %>% 
+  fmt_number(
+    columns = vars(ave_prop),
+    decimals = 2) %>% 
+  fmt_number(
+    columns = vars(ave_delay),
+    decimals = 2) %>%
+  data_color(columns = vars(ave_delay),
+             colors =  scales::col_numeric(palette = "plasma", 
+                                           domain = NULL),
+             alpha = .7) %>% 
+  tab_options(column_labels.background.color = "pink")
+```
+
+### Task 2: 
+
+The question I have is "What routes got more often than others and proportion of flights diverted in those routes?" 
+
+```{r}
+diverted_flights <- tbl(connection_airline, "flights") %>% 
+  filter(year == 2017) %>% 
+  group_by(origin, dest) %>% 
+  summarise(route = paste(origin, dest, sep=" to "),
+            total = n(),
+            prop_diverted = round(mean(diverted), digits = 5)) %>% 
+  ungroup() %>% 
+  select(route, total, prop_diverted)
+```
+
+```{r}
+show_query(diverted_flights)
+```
+
+```{sql, connection = connection_airline}
+SELECT `route`, `total`, `prop_diverted`
+FROM (SELECT `origin`, `dest`, CONCAT_WS(' to ', `origin`, `dest`) AS `route`, COUNT(*) AS `total`, ROUND(AVG(`diverted`), 4) AS `prop_diverted`
+FROM `flights`
+WHERE (`year` = 2017.0)
+GROUP BY `origin`, `dest`) `q01`
+```
+
+```{r}
+diverted_flights %>% 
+  arrange(desc(total)) %>% 
+  head(10) %>% 
+  ggplot(aes(x = total, y = fct_reorder(route, total))) +
+  geom_col(aes(fill = prop_diverted)) +
+  geom_label(aes(label = prop_diverted)) +
+  labs(x = "Total number of routes", y = "", fill = "Proportion of flights being diverted")
+```
+
+Based on the graph above, SFO to LAX and LAX to SFO are the two routes that got diverted the most. 
+
+### Assignment GitHub Link
+
+
+### Shiny app (github link)
